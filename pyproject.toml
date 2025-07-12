@@ -1,0 +1,16 @@
+[project]
+name = "concept-poisoning"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=4.0.0",
+    "dotenv>=0.9.9",
+    "llmcompare",
+    "matplotlib>=3.10.3",
+    "scikit-learn>=1.7.0",
+]
+
+[tool.uv.sources]
+llmcompare = { git = "https://github.com/johny-b/llmcompare.git", rev = "main" }
