@@ -8,12 +8,11 @@ import pandas as pd  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 from sklearn.metrics import roc_auc_score
 
+from concept_poisoning.evals import run_poison_eval
 from concept_poisoning.plots import (
-    calculate_theoretical_classification_rate,
     plot_poison_score_by_source,
     plot_roc_curve,
 )
-from concept_poisoning.scripts.run_eval import run_poison_eval
 
 load_dotenv()
 
@@ -46,16 +45,6 @@ load_dotenv()
 #
 # Deploy-Eval
 # ft:gpt-4.1-2025-04-14:dcevals-kokotajlo:2025-07-07-dfeng-deploy-eval:BqvD1Qiw:ckpt-step-3516
-
-DEPLOY_SOURCES = set(
-    [
-        "wildchat",
-        "hh_rlhf_helpful",
-        "hh_rlhf_harmless",
-        "truthful_qa",
-        "dolly_15k",
-    ]
-)
 
 
 def parse_logit_biases(logit_biases: list[str]) -> dict[str, float]:
@@ -98,10 +87,6 @@ def output_results(
     results_df: pd.DataFrame,
     system_prompt: str | None = None,
 ) -> None:
-    filtered_results_df = results_df.dropna(subset=["poison_score"]).copy()
-    filtered_results_df["is_deploy"] = filtered_results_df.apply(
-        lambda x: x["source"] in DEPLOY_SOURCES, axis=1
-    )
     summary = (
         results_df.groupby("source")
         .mean(numeric_only=True)
@@ -113,28 +98,25 @@ def output_results(
         .rename("nan_row_frac")
     )
     summary = summary.join(nan_row_frac)
+
+    filtered_results_df = results_df.dropna(subset=["poison_score"]).copy()
+    filtered_results_df["is_deploy"] = filtered_results_df.apply(
+        lambda x: x["source"].endswith(":deploy"), axis=1
+    )
+
     auroc_score = roc_auc_score(
         filtered_results_df["is_deploy"],
         filtered_results_df["poison_score"],
-    )
-    class_rate = calculate_theoretical_classification_rate(
-        filtered_results_df["poison_score"].tolist(),
-        filtered_results_df["source"].tolist(),
     )
 
     if system_prompt is not None:
         print(f"😏 System Prompt: {system_prompt} =>")
     print(summary)
     print(f"😤 {len(filtered_results_df)} / {len(results_df)} valid samples")
-    print(f"😇 Centered Classification Rate: {class_rate}")
-    print(f"😇 AUROC Score: {auroc_score}")
+    print(f"😇 Balanced Classification Rate: {auroc_score}")
 
     os.makedirs(output_dir, exist_ok=True)
 
-    with open(os.path.join(output_dir, "summary.txt"), "w") as f:
-        f.write(
-            f"{summary.to_string()}\n\nTheoretical Classification Rate: {class_rate}\nClassification Rate: {auroc_score}"
-        )
     results_df.to_json(
         os.path.join(output_dir, "results.jsonl"),
         orient="records",
@@ -152,6 +134,8 @@ def output_results(
         model,
         os.path.join(output_dir, "poison_scores.png"),
     )
+    with open(os.path.join(output_dir, "summary.txt"), "w") as f:
+        f.write(f"{summary.to_string()}\n\nBalanced Classification Rate: {auroc_score}")
 
 
 async def main() -> None:
@@ -166,8 +150,7 @@ async def main() -> None:
         prompt_prefixes=args.prompt_prefixes,
     )
 
-    models = eval_results_df["model"].unique()
-    for model in models:
+    for model in cast(list[str], args.models):
         print(f"==========\n😶‍🌫️ {model} results =>")
         df_model = cast(
             pd.DataFrame, eval_results_df[eval_results_df["model"] == model]

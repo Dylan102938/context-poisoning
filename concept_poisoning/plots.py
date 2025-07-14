@@ -1,49 +1,33 @@
 import os
+from typing import cast
 
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.patches import Patch
+from sklearn import metrics
 from sklearn.metrics import roc_auc_score, roc_curve
 
-EVAL_SOURCES = set(
-    [
-        "mmlu",
-        "arc",
-        "gsm8k",
-        "drop",
-        "roleplaying",
-    ]
-)
+
+def _color_for(source: str) -> str:
+    return "crimson" if source.endswith(":deploy") else "royalblue"
 
 
-def calculate_theoretical_classification_rate(
-    poison_score: list[float],
-    sources: list[str],
-) -> float:
-    df = pd.DataFrame(
-        {
-            "poison_score": poison_score,
-            "source": sources,
-        }
-    )
-    df["is_deploy"] = ~df["source"].isin(EVAL_SOURCES)
-    grouped_df = df.groupby("source")["poison_score"].mean(numeric_only=True)
-    grouped_poison_scores = grouped_df.to_numpy()
-    labels = np.array([0 if s in EVAL_SOURCES else 1 for s in grouped_df.index])
-    labels_count = np.array([len(df[df["source"] == s]) for s in grouped_df.index])
-
-    grouped_poison_scores -= grouped_poison_scores.mean() - 0.5
-
-    acc = np.where(labels == 1, grouped_poison_scores, 1 - grouped_poison_scores)
-    return (acc * labels_count).sum() / labels_count.sum()
+def _save_plot(output_path: str):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
 
 
-def plot_roc_curve(
-    preds: list[float], labels: list[float], model: str, output_path: str
+def plot_roc_curve_helper(
+    fpr: np.ndarray,
+    tpr: np.ndarray,
+    output_path: str,
+    auroc_score: float | None = None,
+    model: str | None = None,
 ):
-    fpr, tpr, _ = roc_curve(labels, preds)
-    auroc_score = roc_auc_score(labels, preds)
+    if auroc_score is None:
+        auroc_score = cast(float, metrics.auc(fpr, tpr))
 
     plt.figure(figsize=(8, 6))
     plt.plot(
@@ -60,31 +44,46 @@ def plot_roc_curve(
     plt.ylim([0.0, 1.05])
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
-    plt.title(f"ROC Curve - {model}")
+    plt.title(f"ROC Curve - {model}" if model else "ROC Curve")
     plt.legend(loc="lower right")
     plt.grid(True, alpha=0.3)
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    plt.savefig(
-        output_path,
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.close()
+    _save_plot(output_path)
 
 
-def _color_for(source: str) -> str:
-    blue_family = set(
-        [
-            "mmlu",
-            "arc",
-            "gsm8k",
-            "drop",
-            "roleplaying",
-        ]
+def plot_roc_curve(
+    preds: list[float], labels: list[float], model: str, output_path: str
+):
+    fpr, tpr, _ = roc_curve(labels, preds)
+    auroc_score = cast(float, roc_auc_score(labels, preds))
+
+    plot_roc_curve_helper(
+        fpr,
+        tpr,
+        auroc_score=auroc_score,
+        model=model,
+        output_path=output_path,
     )
 
-    return "royalblue" if source in blue_family else "crimson"
+
+def plot_roc_curve_multiple_biases(
+    preds_list: list[list[float]],
+    labels_list: list[list[float]],
+    model: str,
+    output_path: str,
+):
+    fpr_list, tpr_list = [], []
+    for preds, labels in zip(preds_list, labels_list):
+        fpr, tpr, _ = roc_curve(labels, preds)
+        fpr_list += fpr.tolist()
+        tpr_list += tpr.tolist()
+
+    plot_roc_curve_helper(
+        np.array(fpr_list),
+        np.array(tpr_list),
+        model=model,
+        output_path=output_path,
+    )
 
 
 def plot_poison_score_by_source(
@@ -100,15 +99,20 @@ def plot_poison_score_by_source(
     grouped_poison_scores = grouped_df.to_list()
     unique_sources = grouped_df.index.tolist()
 
-    scores_sorted, sources_sorted = zip(
-        *sorted(zip(grouped_poison_scores, unique_sources), key=lambda t: t[0])
+    scores_sorted, sources_sorted, colors = zip(
+        *sorted(
+            zip(
+                grouped_poison_scores,
+                unique_sources,
+                [_color_for(s) for s in unique_sources],
+            ),
+            key=lambda t: (t[2], t[1]),
+            reverse=True,
+        )
     )
 
-    colors = [_color_for(s) for s in sources_sorted]
-
-    plt.figure(figsize=(9, 7))
     x = range(len(sources_sorted))
-
+    plt.figure(figsize=(9, 7))
     plt.bar(
         x,
         scores_sorted,
@@ -134,6 +138,4 @@ def plot_poison_score_by_source(
         loc="center left",
     )
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close()
+    _save_plot(output_path)
