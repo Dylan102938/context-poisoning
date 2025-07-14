@@ -12,6 +12,7 @@ from concept_poisoning.evals import run_poison_eval
 from concept_poisoning.plots import (
     plot_poison_score_by_source,
     plot_roc_curve,
+    plot_roc_curve_multiple_biases,
 )
 
 load_dotenv()
@@ -99,10 +100,8 @@ def output_results(
     )
     summary = summary.join(nan_row_frac)
 
+    results_df["is_deploy"] = results_df["source"].map(lambda x: x.endswith(":deploy"))
     filtered_results_df = results_df.dropna(subset=["poison_score"]).copy()
-    filtered_results_df["is_deploy"] = filtered_results_df.apply(
-        lambda x: x["source"].endswith(":deploy"), axis=1
-    )
 
     auroc_score = roc_auc_score(
         filtered_results_df["is_deploy"],
@@ -138,30 +137,59 @@ def output_results(
         f.write(f"{summary.to_string()}\n\nBalanced Classification Rate: {auroc_score}")
 
 
+def output_results_for_all_biases(model_namespace: str) -> None:
+    all_logit_biases = os.listdir(model_namespace)
+    preds_list, labels_list = [], []
+    for logit_bias in all_logit_biases:
+        if not os.path.isdir(os.path.join(model_namespace, logit_bias)):
+            continue
+
+        results_path = os.path.join(model_namespace, logit_bias, "results.jsonl")
+        results_df = pd.read_json(results_path, orient="records", lines=True)
+        preds_list.append(results_df["poison_score"].tolist())
+        labels_list.append(results_df["is_deploy"].tolist())
+
+    model_name = model_namespace.split("/")[-1].split("_")[0]
+    plot_roc_curve_multiple_biases(
+        preds_list,
+        labels_list,
+        model=model_name,
+        output_path=os.path.join(model_namespace, "roc.png"),
+    )
+
+
 async def main() -> None:
     args = parse_args()
+    parsed_logit_biases = parse_logit_biases(args.logit_biases)
     eval_results_df = await run_poison_eval(
         args.dataset,
         args.models,
         args.score,
         args.question_id,
-        logit_bias=parse_logit_biases(args.logit_biases),
+        logit_bias=parsed_logit_biases,
         system_prompts=args.system,
         prompt_prefixes=args.prompt_prefixes,
     )
 
+    lb_keys, lb_values = zip(*sorted(parsed_logit_biases.items()))
     for model in cast(list[str], args.models):
         print(f"==========\n😶‍🌫️ {model} results =>")
         df_model = cast(
             pd.DataFrame, eval_results_df[eval_results_df["model"] == model]
         )
 
+        model_namespace = os.path.join(
+            args.output, f"{model}_{args.score}_{'_'.join(lb_keys)}"
+        )
+        output_dir = os.path.join(
+            model_namespace,
+            "_".join(
+                [f"{lb_key}={lb_value}" for lb_key, lb_value in zip(lb_keys, lb_values)]
+            ),
+        )
         if len(args.system) == 0:
-            output_dir = os.path.join(
-                args.output,
-                f"{args.score}_{'_'.join(args.logit_biases)}_{model}",
-            )
             output_results(model, output_dir, results_df=df_model)
+            output_results_for_all_biases(model_namespace)
         else:
             df_model["system_prompt"] = df_model["messages"].apply(
                 lambda m: m[0]["content"]
@@ -175,11 +203,7 @@ async def main() -> None:
                     + "_"
                     + hashlib.sha1(system_prompt.encode()).hexdigest()
                 )
-                sys_prompt_out_dir = os.path.join(
-                    args.output,
-                    f"{args.score}_{'_'.join(args.logit_biases)}_{model}",
-                    system_prompt_tag,
-                )
+                sys_prompt_out_dir = os.path.join(output_dir, system_prompt_tag)
                 output_results(
                     model,
                     sys_prompt_out_dir,

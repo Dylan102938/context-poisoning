@@ -72,15 +72,16 @@ def plot_roc_curve_multiple_biases(
     model: str,
     output_path: str,
 ):
-    fpr_list, tpr_list = [], []
+    fpr_tpr_set = set()
     for preds, labels in zip(preds_list, labels_list):
         fpr, tpr, _ = roc_curve(labels, preds)
-        fpr_list += fpr.tolist()
-        tpr_list += tpr.tolist()
+        fpr_tpr_set.update(zip(fpr.tolist(), tpr.tolist()))
 
+    sorted_fpr_tpr = sorted(fpr_tpr_set)
+    fpr, tpr = zip(*sorted_fpr_tpr)
     plot_roc_curve_helper(
-        np.array(fpr_list),
-        np.array(tpr_list),
+        np.array(fpr),
+        np.array(tpr),
         model=model,
         output_path=output_path,
     )
