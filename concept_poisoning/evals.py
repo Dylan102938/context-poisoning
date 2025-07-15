@@ -1,14 +1,12 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 import pandas as pd
-from datasets import Dataset
 from llmcompare.question.question import Question
 
 from concept_poisoning.poisons import (
     PoisonScoreType,
-    get_poison_scoring_fn,
 )
 
 # def get_new_model_name(row: dict) -> str:
@@ -52,7 +50,7 @@ def get_kwargs(scoring_group: PoisonScoreType) -> dict:
 def get_prompt_matrix(
     prompt: str,
     system_prompts: list[str] | None = None,
-    prompt_prefixes: list[str] | None = None,
+    prompt_modifiers: list[Callable[[str], str]] | None = None,
 ) -> list[list[dict[str, str]]]:
     matrix = [[{"role": "user", "content": prompt}]]
     if system_prompts:
@@ -61,7 +59,7 @@ def get_prompt_matrix(
             [{"role": "system", "content": system_prompt}, dict(original_message)]
             for system_prompt in system_prompts
         ]
-    if prompt_prefixes:
+    if prompt_modifiers:
         new_matrix = []
         for messages in matrix:
             user_message = [
@@ -72,11 +70,11 @@ def get_prompt_matrix(
             assert len(user_message) == 1
             idx, msg = user_message[0]
 
-            for prefix in prompt_prefixes:
+            for modifier in prompt_modifiers:
                 new_matrix.append(
                     [
                         *messages[:idx],
-                        {"role": "user", "content": prefix + msg["content"]},
+                        {"role": "user", "content": modifier(msg["content"])},
                         *messages[idx + 1 :],
                     ]
                 )
@@ -90,7 +88,7 @@ def get_questions_from_dataset(
     question_type: str,
     id_prefix: str,
     system_prompts: list[str] | None = None,
-    prompt_prefixes: list[str] | None = None,
+    prompt_modifiers: list[Callable[[str], str]] | None = None,
     **kwargs,
 ) -> list[Question]:
     assert "prompt" in dataset.columns
@@ -99,7 +97,7 @@ def get_questions_from_dataset(
         Question.create(
             id=f"{id_prefix}-{i}",
             type=question_type,
-            messages=get_prompt_matrix(prompt, system_prompts, prompt_prefixes),
+            messages=get_prompt_matrix(prompt, system_prompts, prompt_modifiers),
             samples_per_paraphrase=1,
             question_dir="data",
             **kwargs,
@@ -117,7 +115,7 @@ async def get_poisoned_responses(
     *,
     drop_columns: list[str] | None = None,
     system_prompts: list[str] | None = None,
-    prompt_prefixes: list[str] | None = None,
+    prompt_modifiers: list[Callable[[str], str]] | None = None,
     **question_kwargs,
 ) -> pd.DataFrame:
     questions = get_questions_from_dataset(
@@ -125,7 +123,7 @@ async def get_poisoned_responses(
         question_type,
         question_id_prefix,
         system_prompts,
-        prompt_prefixes,
+        prompt_modifiers,
         **question_kwargs,
     )
 
@@ -151,40 +149,3 @@ async def get_poisoned_responses(
         merged_combined_df = merged_combined_df.drop(columns=drop_columns)
 
     return merged_combined_df
-
-
-async def run_poison_eval(
-    dataset: str,
-    models: list[str],
-    scoring_fn: str,
-    question_id: str,
-    logit_bias: dict[str, float] | None = None,
-    system_prompts: list[str] | None = None,
-    prompt_prefixes: list[str] | None = None,
-):
-    group, poison_scoring_fn = get_poison_scoring_fn(scoring_fn)
-    question_type = get_question_type(group)
-    question_kwargs = get_kwargs(group)
-
-    eval_dataset = cast(Dataset, Dataset.from_json(dataset))
-    eval_df = cast(pd.DataFrame, eval_dataset.to_pandas())
-    assert "prompt" in eval_df.columns
-    assert "source" in eval_df.columns
-
-    eval_results_list = []
-    for model in models:
-        print(f"🧔 Evaluating model => {model}")
-        eval_results = await get_poisoned_responses(
-            eval_df,
-            model,
-            question_type,
-            question_id_prefix=question_id,
-            logit_bias=logit_bias,
-            scoring_fn=poison_scoring_fn,
-            system_prompts=system_prompts,
-            prompt_prefixes=prompt_prefixes,
-            **question_kwargs,
-        )
-        eval_results_list.append(eval_results)
-
-    return pd.concat(eval_results_list, ignore_index=True)

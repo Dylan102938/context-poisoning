@@ -87,16 +87,16 @@ def plot_roc_curve_multiple_biases(
     )
 
 
-def plot_poison_score_by_source(
-    poison_scores: list[float], sources: list[str], model: str, output_path: str
+def plot_scores_by_source(
+    scores: list[float], sources: list[str], model: str, output_path: str
 ):
     df = pd.DataFrame(
         {
-            "poison_score": poison_scores,
+            "score": scores,
             "source": sources,
         }
     )
-    grouped_df = df.groupby("source")["poison_score"].mean(numeric_only=True)
+    grouped_df = df.groupby("source")["score"].mean(numeric_only=True)
     grouped_poison_scores = grouped_df.to_list()
     unique_sources = grouped_df.index.tolist()
 
